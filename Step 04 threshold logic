@@ -1,0 +1,78 @@
+To optimize a Fork/Join task, the most critical factor is the Threshold.
+If your threshold is too low, you create too many overhead tasks (the cost of managing the "fork" is higher than the work itself). If it's too high, you don't utilize all your CPU cores effectively.
+Here is how you can benchmark and adjust it.
+The Optimization Strategy
+The goal is to find the "Sweet Spot" where the overhead of splitting a task is significantly less than the time saved by running it in parallel.
+1. The Benchmarking Code
+This example compares different thresholds for a simple sum operation.
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.RecursiveTask;
+import java.util.stream.LongStream;
+
+public class ThresholdBenchmark {
+
+    static class OptimizedSumTask extends RecursiveTask<Long> {
+        private final long[] array;
+        private final int start, end;
+        private final int threshold; // We can pass this in to test!
+
+        public OptimizedSumTask(long[] array, int start, int end, int threshold) {
+            this.array = array;
+            this.start = start;
+            this.end = end;
+            this.threshold = threshold;
+        }
+
+        @Override
+        protected Long compute() {
+            if (end - start <= threshold) {
+                // Sequential processing for small chunks
+                long sum = 0;
+                for (int i = start; i < end; i++) sum += array[i];
+                return sum;
+            } else {
+                // Forking
+                int mid = (start + end) / 2;
+                OptimizedSumTask left = new OptimizedSumTask(array, start, mid, threshold);
+                OptimizedSumTask right = new OptimizedSumTask(array, mid, end, threshold);
+                
+                left.fork(); 
+                return right.compute() + left.join();
+            }
+        }
+    }
+
+    public static void main(String[] args) {
+        long[] data = LongStream.rangeClosed(1, 10_000_000).toArray();
+        ForkJoinPool pool = new ForkJoinPool();
+
+        // Testing different thresholds
+        int[] thresholds = {100, 1000, 10_000, 100_000, 1_000_000};
+
+        for (int t : thresholds) {
+            long start = System.currentTimeMillis();
+            long result = pool.invoke(new OptimizedSumTask(data, 0, data.length, t));
+            long end = System.currentTimeMillis();
+            System.out.println("Threshold: " + t + " | Time: " + (end - start) + "ms | Result: " + result);
+        }
+    }
+}
+
+2. Analyzing the Results
+When you run this, you will usually see a "U-shaped" curve in performance:
+| Threshold | Performance Impact | Why? |
+|---|---|---|
+| Too Small (100) | Slow | The system spends all its time creating Task objects and managing the stack. |
+| The Sweet Spot (10k-100k) | Fastest | Just enough tasks to keep all CPU cores at 100% without excessive overhead. |
+| Too Large (1M+) | Slow | Some cores finish early and sit idle because the "chunks" are too big to steal. |
+3. The "Rule of Thumb" for Thresholds
+A good starting point is the N / (P \times 10) rule:
+ * N: Total number of items.
+ * P: Number of available processors.
+ * Goal: You want to create roughly 10 to 100 tasks per processor. This gives the Work-Stealing algorithm enough "inventory" to keep everyone busy if one task takes longer than others.
+4. How to check your Common Pool capacity
+If you want to know how many threads your machine is using right now by default, run this simple line:
+System.out.println("Default Parallelism: " + ForkJoinPool.commonPool().getParallelism());
+
+Would you like me to explain how "Spliterators" automatically handle this threshold logic when you use a regular parallelStream()?
+
