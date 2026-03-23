@@ -1,0 +1,53 @@
+Think of Fork/Join as the "Divide and Conquer" engine of the Java Concurrency framework. It was introduced in Java 7 specifically to handle tasks that can be broken down into smaller sub-tasks until they are simple enough to solve sequentially.
+It is the heavy machinery running behind the scenes whenever you use a .parallelStream().
+The Three Core Stages
+The framework follows a very specific lifecycle to keep your CPU cores busy:
+ * Fork: A large task is split (forked) into smaller, independent chunks. This happens recursively until the chunks reach a "threshold" (a size small enough to handle easily).
+ * Compute: The smallest chunks are processed by individual threads.
+ * Join: Once the sub-tasks are finished, their results are merged (joined) back together to produce the final result.
+The Secret Sauce: Work-Stealing
+The reason Fork/Join is more efficient than a standard ThreadPoolExecutor is the Work-Stealing Algorithm.
+In a traditional pool, if one thread gets a "heavy" task and others get "light" tasks, some threads sit idle while one struggles. In a Fork/Join pool:
+ * Every thread has its own double-ended queue (deque) of tasks.
+ * If Thread A finishes all its tasks, it doesn't just go to sleep. It looks at the back of Thread B's queue and "steals" a task to work on.
+ * This ensures that as long as there is work to do, no CPU core stays idle.
+Fork/Join in Code (The RecursiveTask)
+Before parallel streams made this invisible, you had to write it manually using RecursiveTask (for results) or RecursiveAction (for void tasks).
+import java.util.concurrent.RecursiveTask;
+
+public class SumTask extends RecursiveTask<Long> {
+    private final long[] array;
+    private final int start, end;
+    private static final int THRESHOLD = 1000; // Smallest chunk size
+
+    protected Long compute() {
+        if (end - start <= THRESHOLD) {
+            // Compute sequentially if small enough
+            long sum = 0;
+            for (int i = start; i < end; i++) sum += array[i];
+            return sum;
+        } else {
+            // Split (Fork)
+            int mid = (start + end) / 2;
+            SumTask leftTask = new SumTask(array, start, mid);
+            SumTask rightTask = new SumTask(array, mid, end);
+
+            leftTask.fork(); // Run left task in background
+            long rightResult = rightTask.compute(); // Run right task in current thread
+            long leftResult = leftTask.join(); // Wait for left result
+
+            return leftResult + rightResult; // Join
+        }
+    }
+}
+
+Why use it?
+| Benefit | Description |
+|---|---|
+| Efficiency | Maximizes CPU usage by ensuring all cores are working via work-stealing. |
+| Scalability | It scales naturally with the number of processors available on the machine. |
+| Simplicity | When used via Parallel Streams, you get all this power with just one extra method call. |
+When to be careful?
+If your tasks involve I/O blocking (waiting for a database or a file), the Fork/Join pool performs poorly. It is designed for CPU-bound tasks—pure math, data processing, and logic—where the threads are constantly "thinking" rather than "waiting."
+Would you like to see how to adjust the "Threshold" to optimize performance for a specific type of data?
+
