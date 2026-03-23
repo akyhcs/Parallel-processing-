@@ -1,0 +1,68 @@
+While Parallel Streams are great for "crunching numbers" (CPU-bound tasks), CompletableFuture is the king of "waiting for things" (I/O-bound tasks).
+If you use a parallel stream to call 50 different website APIs, your whole ForkJoinPool will stall because the threads are just sitting there waiting for network responses. CompletableFuture solves this by using a non-blocking approach.
+1. The Core Difference
+ * Parallel Streams: Best for data processing (e.g., "Square these 1 million numbers").
+ * CompletableFuture: Best for task orchestration (e.g., "Get user data from Database A, then get their profile picture from S3, then email them").
+2. Basic Example: Running Tasks in Parallel
+With CompletableFuture, you "fire and forget" tasks, and they return a "promise" that the data will be there later.
+import java.util.concurrent.CompletableFuture;
+
+public class AsyncExample {
+    public static void main(String[] args) {
+        // Start two tasks at the same time
+        CompletableFuture<String> task1 = CompletableFuture.supplyAsync(() -> {
+            simulateWait(2000); // Simulate an API call
+            return "Data from Service A";
+        });
+
+        CompletableFuture<String> task2 = CompletableFuture.supplyAsync(() -> {
+            simulateWait(1000); // Simulate a DB query
+            return "Data from Database B";
+        });
+
+        // Combine them when BOTH are finished
+        CompletableFuture<Void> combinedTask = task1.thenAcceptBoth(task2, (res1, res2) -> {
+            System.out.println("Final Result: " + res1 + " and " + res2);
+        });
+
+        // Wait for everything to finish so the program doesn't close
+        combinedTask.join(); 
+    }
+
+    private static void simulateWait(int ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) {}
+    }
+}
+
+3. Chaining Lambdas (The Pipeline)
+One of the coolest features is "chaining." You can process data in stages, where each stage runs as soon as the previous one finishes.
+ * thenApply(): Transform the result (like .map()).
+ * thenCompose(): Chain another async task (like .flatMap()).
+ * exceptionally(): A "catch" block specifically for your parallel task.
+CompletableFuture.supplyAsync(() -> fetchOrderId())
+    .thenApply(id -> encryptId(id))      // Stage 2: Encrypt
+    .thenAccept(enc -> sendToApi(enc))   // Stage 3: Send
+    .exceptionally(ex -> {               // Handle errors in the chain
+        System.err.println("Error: " + ex.getMessage());
+        return null;
+    });
+
+4. Customizing the Thread Pool
+Unlike Parallel Streams (where using a custom pool is a bit of a hack), CompletableFuture invites you to provide your own Executor. This is vital for I/O tasks.
+// Create a specific pool for I/O tasks
+Executor ioExecutor = Executors.newFixedThreadPool(100); 
+
+CompletableFuture.runAsync(() -> {
+    // This runs in our 100-thread pool, leaving the CPU free for other things
+    saveLargeFileToDisk();
+}, ioExecutor);
+
+Summary Comparison
+| Feature | Parallel Stream | CompletableFuture |
+|---|---|---|
+| Primary Goal | Decomposing a large collection | Managing async/event-driven tasks |
+| Thread Pool | Common ForkJoinPool | ForkJoinPool OR Custom Executor |
+| Error Handling | Difficult (throws exception) | Built-in (exceptionally, handle) |
+| Best Use Case | Math, Sorting, Filtering | API Calls, Database I/O, UI responsiveness |
+Would you like me to show you a "Real World" example where we combine several API calls into one final report using CompletableFuture.allOf()?
+
