@@ -1,0 +1,52 @@
+When you use a simple .parallelStream(), you don't have to manually write RecursiveTask or set a threshold. Instead, Java uses a specialized object called a Spliterator (Split + Iterator) to handle the "Forking" logic for you.
+1. The Spliterator's Strategy
+The Spliterator follows a recursive "Half-and-Half" splitting strategy. It attempts to divide the data source (like an ArrayList) into two equal parts.
+ * trySplit(): The stream asks the Spliterator, "Can you split this list in half?"
+ * The Fork: If the answer is yes, a new Spliterator is created for the first half, and the original Spliterator keeps the second half.
+ * Recursive Splitting: This continues until the chunks are "small enough."
+ * tryAdvance(): Once the chunks are small, the threads use this method to process the individual elements sequentially.
+2. Automatic Thresholding
+Unlike the manual SumTask where we hardcoded a threshold of 1000, the Common ForkJoinPool calculates the threshold dynamically based on:
+ * The total size of the collection.
+ * The number of available CPU cores.
+The goal of the Spliterator is to create roughly 4 to 10 times as many tasks as there are processors. This is the "Goldilocks" zone: it's enough work to keep every core busy (even if some tasks finish faster), but not so many tasks that the memory is overwhelmed by management overhead.
+3. Why Data Structure Matters
+Not all collections are created equal when it comes to parallel processing. The efficiency of the "Fork" depends entirely on how easily the Spliterator can find the middle of the data.
+| Data Structure | Splittability | Why? |
+|---|---|---|
+| ArrayList | Excellent | Finding the middle is a simple math calculation: (start + end) / 2. |
+| IntStream.range | Excellent | It’s just numbers; the split is perfectly balanced and instant. |
+| HashSet / TreeSet | Good | Can be split, but requires more internal logic than an array. |
+| LinkedList | Poor | To find the middle, you have to walk through half the nodes. Splitting is very slow. |
+4. How to Create a Custom Spliterator
+If you have a unique data source (like a custom file format or a non-standard database result set), you can implement your own Spliterator<T>.
+public class MyCustomSpliterator<T> implements Spliterator<T> {
+    // Return a new Spliterator for the first half of the data
+    @Override
+    public Spliterator<T> trySplit() {
+        // Logic to divide your data source in half
+        return null; 
+    }
+
+    // Process a single element
+    @Override
+    public boolean tryAdvance(Consumer<? super T> action) {
+        // Logic to feed the next item to the lambda
+        return true;
+    }
+
+    @Override
+    public long estimateSize() { return 1000; }
+
+    @Override
+    public int characteristics() { return ORDERED | SIZED; }
+}
+
+Pro Tip: Check for Parallelism
+If you are writing a library and want to know if your code is actually running in parallel (to avoid expensive logging or synchronized blocks), you can use:
+if (Thread.currentThread().getName().contains("worker")) {
+    // I am running inside a ForkJoinPool thread!
+}
+
+Would you like to see how to use CompletableFuture for parallel processing? It's the modern alternative to parallel streams for tasks that involve waiting (I/O).
+
