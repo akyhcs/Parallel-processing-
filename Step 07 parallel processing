@@ -1,0 +1,322 @@
+Could you share a bit more detail so I can write this precisely for you?
+
+What does your Java class look like, and what's the XPath you're checking?
+
+I'll wait for your answers, but I can also give you a solid general-purpose implementation right now that you can adapt:
+
+```java
+import javax.xml.xpath.*;
+import org.xml.sax.InputSource;
+import java.io.StringReader;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+public class XmlPathChecker {
+
+    // Your POJO
+    public static class Record {
+        private final String id;
+        private final String xmlString;
+
+        public Record(String id, String xmlString) {
+            this.id = id;
+            this.xmlString = xmlString;
+        }
+        public String getId() { return id; }
+        public String getXmlString() { return xmlString; }
+    }
+
+    // XPathFactory is NOT thread-safe — use ThreadLocal for parallel streams
+    private static final ThreadLocal<XPath> XPATH_THREAD_LOCAL =
+        ThreadLocal.withInitial(() -> XPathFactory.newInstance().newXPath());
+
+    public static Map<String, Boolean> checkPathExists(List<Record> records, String xpathExpression) {
+        return records.parallelStream()
+            .collect(Collectors.toConcurrentMap(
+                Record::getId,
+                record -> evaluatePath(record.getXmlString(), xpathExpression)
+            ));
+    }
+
+    private static boolean evaluatePath(String xml, String xpathExpression) {
+        try {
+            XPath xpath = XPATH_THREAD_LOCAL.get();
+            InputSource source = new InputSource(new StringReader(xml));
+            String result = xpath.evaluate(xpathExpression, source);
+            return result != null && !result.isEmpty();
+        } catch (XPathExpressionException e) {
+            // treat parse errors as false, or rethrow based on your needs
+            return false;
+        }
+    }
+
+    // Usage
+    public static void main(String[] args) {
+        List<Record> records = List.of(
+            new Record("1", "<root><data>hello</data></root>"),
+            new Record("2", "<root><other>world</other></root>")
+        );
+
+        Map<String, Boolean> result = checkPathExists(records, "/root/data");
+        result.forEach((id, exists) -> System.out.println(id + " -> " + exists));
+        // Output: 1 -> true,  2 -> false
+    }
+}
+```
+
+**Key design decisions explained:**
+
+- **`ThreadLocal<XPath>`** — `XPathFactory` and `XPath` are not thread-safe. Using `ThreadLocal` gives each parallel thread its own instance, avoiding race conditions.
+- **`parallelStream()` + `toConcurrentMap()`** — `toConcurrentMap` is required (not regular `toMap`) since parallel streams write concurrently.
+- **`evaluate()` returning empty string** — XPath returns `""` when a node isn't found (not null), so we check both.
+
+**If you need multiple paths (any one must match):**
+```java
+private static boolean anyPathExists(String xml, List<String> paths) {
+    return paths.parallelStream().anyMatch(path -> evaluatePath(xml, path));
+}
+```
+
+
+The implementation I already shared is actually a perfect fit — it already accepts a dynamic `xpathExpression` as a runtime parameter and uses `String` as the map key. Here's the clean, final version tailored exactly to your requirements:
+
+```java
+import javax.xml.xpath.*;
+import org.xml.sax.InputSource;
+import java.io.StringReader;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+public class XmlPathChecker {
+
+    // Your POJO
+    public static class Record {
+        private final String id;        // String key
+        private final String xmlString;
+
+        public Record(String id, String xmlString) {
+            this.id = id;
+            this.xmlString = xmlString;
+        }
+        public String getId() { return id; }
+        public String getXmlString() { return xmlString; }
+    }
+
+    // XPath is NOT thread-safe — ThreadLocal gives each thread its own instance
+    private static final ThreadLocal<XPath> XPATH_THREAD_LOCAL =
+        ThreadLocal.withInitial(() -> XPathFactory.newInstance().newXPath());
+
+    /**
+     * Processes 100k records in parallel and returns Map<String, Boolean>
+     * where true = the dynamic XPath exists in that record's XML.
+     *
+     * @param records         list of records to process
+     * @param xpathExpression dynamic XPath passed at runtime, e.g. "/root/orders/order"
+     */
+    public static Map<String, Boolean> checkPathExists(List<Record> records, String xpathExpression) {
+        return records.parallelStream()
+            .collect(Collectors.toConcurrentMap(
+                Record::getId,
+                record -> pathExists(record.getXmlString(), xpathExpression)
+            ));
+    }
+
+    private static boolean pathExists(String xml, String xpathExpression) {
+        try {
+            XPath xpath = XPATH_THREAD_LOCAL.get();
+            InputSource source = new InputSource(new StringReader(xml));
+            String result = xpath.evaluate(xpathExpression, source);
+            return result != null && !result.isEmpty();
+        } catch (XPathExpressionException e) {
+            return false; // treat malformed XML/path as false
+        }
+    }
+
+    // --- Usage Example ---
+    public static void main(String[] args) {
+        List<Record> records = List.of(
+            new Record("id-001", "<root><orders><order>A</order></orders></root>"),
+            new Record("id-002", "<root><orders></orders></root>"),
+            new Record("id-003", "<root><other>data</other></root>")
+        );
+
+        // Dynamic path decided at runtime
+        String dynamicPath = "/root/orders/order";
+
+        Map<String, Boolean> result = checkPathExists(records, dynamicPath);
+
+        result.forEach((id, exists) ->
+            System.out.println(id + " => " + exists));
+        // id-001 => true
+        // id-002 => false
+        // id-003 => false
+    }
+}
+```
+
+**Why this works well for 100k records:**
+
+- **`parallelStream()`** splits the work across all available CPU cores automatically
+- **`ThreadLocal<XPath>`** ensures no thread contention — each thread reuses its own `XPath` instance without creating a new one per record
+- **`toConcurrentMap()`** handles concurrent writes to the result map safely
+- **No external dependencies** — uses only `javax.xml.xpath` from the JDK
+
+**Calling it at runtime is simply:**
+```java
+// Path comes from config, user input, DB, etc.
+String path = config.getXmlPath();
+Map<String, Boolean> result = XmlPathChecker.checkPathExists(records, path);
+```
+
+If your `Record` class already exists with different field names, just share it and I'll plug them straight in.
+
+Great question — parallel streams are powerful but have several traps that can cause bugs, poor performance, or even data corruption. Here's what you must keep in mind:
+
+---
+
+## 🔒 1. Thread Safety (Most Critical)
+- **Never use non-thread-safe objects shared across threads** — e.g., `XPath`, `DocumentBuilder`, `SimpleDateFormat`
+- Use `ThreadLocal` to give each thread its own instance (as done in our code)
+- Avoid shared mutable state — don't update a shared variable inside a parallel stream
+
+```java
+// ❌ WRONG — race condition
+int count = 0;
+records.parallelStream().forEach(r -> count++); // not atomic!
+
+// ✅ CORRECT
+long count = records.parallelStream().filter(...).count();
+```
+
+---
+
+## 📦 2. Collector Must Be Thread-Safe
+- `Collectors.toMap()` throws `ConcurrentModificationException` in parallel
+- Always use `Collectors.toConcurrentMap()` for parallel streams
+
+```java
+// ❌ WRONG
+.collect(Collectors.toMap(...))
+
+// ✅ CORRECT
+.collect(Collectors.toConcurrentMap(...))
+```
+
+---
+
+## ⚠️ 3. Duplicate Keys in the Map
+- If two records have the same `id`, `toConcurrentMap()` will throw `IllegalStateException`
+- Always provide a **merge function** as the 3rd argument to handle duplicates
+
+```java
+Collectors.toConcurrentMap(
+    Record::getId,
+    record -> pathExists(record.getXmlString(), xpathExpression),
+    (existing, newVal) -> existing  // keep first, or apply your logic
+)
+```
+
+---
+
+## 💥 4. Exception Handling Inside Streams
+- Streams don't play well with checked exceptions — they silently swallow or crash
+- Wrap risky logic in a helper method with try/catch and return a safe default
+
+```java
+// ❌ WRONG — checked exception crashes the stream
+.map(r -> riskyMethod(r))  // won't compile if it throws checked exception
+
+// ✅ CORRECT — handle inside helper
+private static boolean pathExists(String xml, String path) {
+    try { ... }
+    catch (XPathExpressionException e) { return false; }
+}
+```
+
+---
+
+## 🐌 5. Parallel Doesn't Always Mean Faster
+Parallel streams use the **common ForkJoinPool** (shared across your whole JVM). Bad cases:
+
+| Scenario | Use Parallel? |
+|---|---|
+| 100k+ CPU-heavy records | ✅ Yes |
+| Small lists (< 1000 items) | ❌ No, overhead wins |
+| I/O bound work (DB, network) | ❌ No, threads block |
+| Simple map/filter ops | ❌ Sequential is faster |
+
+For I/O-bound work, use a custom `ExecutorService` instead.
+
+---
+
+## 🔢 6. Order Is Not Guaranteed
+- `parallelStream()` does **not** preserve encounter order by default
+- If order matters (e.g., ordered output, logging sequence), use `.forEachOrdered()` or sort after
+
+```java
+// ❌ order not guaranteed
+records.parallelStream().forEach(System.out::println);
+
+// ✅ if order matters
+records.parallelStream().forEachOrdered(System.out::println);
+```
+Note: `.forEachOrdered()` reduces parallelism benefit — prefer collecting to a map instead.
+
+---
+
+## 🧵 7. ForkJoinPool Starvation
+- All parallel streams share the **same common pool** by default
+- If one task blocks (e.g., I/O, sleep), it starves other parallel tasks in your app
+- For heavy workloads, use a **dedicated pool**:
+
+```java
+ForkJoinPool customPool = new ForkJoinPool(8); // control thread count
+Map<String, Boolean> result = customPool.submit(() ->
+    records.parallelStream()
+        .collect(Collectors.toConcurrentMap(
+            Record::getId,
+            r -> pathExists(r.getXmlString(), xpathExpression),
+            (a, b) -> a
+        ))
+).get();
+customPool.shutdown();
+```
+
+---
+
+## 🗂️ 8. Input List Type Matters
+- `ArrayList` splits well for parallel — good performance ✅
+- `LinkedList` splits poorly — parallel gives no benefit ❌
+- If your source is a `LinkedList` or stream from DB, convert first:
+
+```java
+List<Record> records = new ArrayList<>(dbResultList); // ensure good splitting
+```
+
+---
+
+## 🧹 9. ThreadLocal Cleanup (Memory Leaks)
+- `ThreadLocal` values live as long as the thread lives
+- In thread pools (like ForkJoinPool), threads are reused — stale values can linger
+- Clean up after if needed:
+
+```java
+XPATH_THREAD_LOCAL.remove(); // call after processing is done
+```
+
+---
+
+## ✅ Quick Checklist Before Writing Parallel Stream Code
+
+- [ ] Are all shared objects thread-safe or `ThreadLocal`?
+- [ ] Using `toConcurrentMap()` not `toMap()`?
+- [ ] Handled duplicate keys with a merge function?
+- [ ] All exceptions caught inside helper methods?
+- [ ] Data size large enough to justify parallelism?
+- [ ] Source collection is `ArrayList` (splits well)?
+- [ ] Order doesn't matter, or handled explicitly?
+- [ ] Not doing I/O inside the stream?
+- [ ] Consider custom `ForkJoinPool` if sharing is a concern?
