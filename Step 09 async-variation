@@ -1,0 +1,74 @@
+## Yes! Async Variants Accept Executor Too!
+
+This is actually the **most granular control** you can get.
+
+---
+
+## How it works
+
+```java
+ExecutorService vExec = Executors.newVirtualThreadPerTaskExecutor();
+
+CompletableFuture.supplyAsync(() -> fetchUser(id), vExec)  // virtual thread
+    .thenApplyAsync(user -> enrichUser(user), vExec)        // virtual thread
+    .thenAcceptAsync(user -> saveToDb(user), vExec)         // virtual thread
+    .exceptionally(ex -> null);
+```
+
+Every stage runs on a **separate virtual thread**.
+
+---
+
+## Sync vs Async Variants — Key Difference
+
+```java
+ExecutorService vExec = Executors.newVirtualThreadPerTaskExecutor();
+
+CompletableFuture.supplyAsync(() -> fetchUser(id), vExec)
+
+    // thenApply — runs on SAME thread that completed previous stage
+    .thenApply(user -> transform(user))
+
+    // thenApplyAsync (no executor) — hands off to ForkJoinPool
+    .thenApplyAsync(user -> transform(user))
+
+    // thenApplyAsync (with vExec) — hands off to a NEW virtual thread ✅
+    .thenApplyAsync(user -> transform(user), vExec);
+```
+
+---
+
+## When to pass vExec to async variants?
+
+```java
+ExecutorService vExec = Executors.newVirtualThreadPerTaskExecutor();
+
+CompletableFuture.supplyAsync(() -> fetchUser(id), vExec)
+
+    // ✅ Pass vExec — this stage does blocking I/O
+    .thenApplyAsync(user -> callAnotherAPI(user), vExec)
+
+    // ✅ No executor needed — pure CPU transformation, no blocking
+    .thenApply(data -> parseJson(data))
+
+    // ✅ Pass vExec — saving to DB is blocking
+    .thenAcceptAsync(data -> saveToDb(data), vExec);
+```
+
+---
+
+## The Complete Picture
+
+| Variant | Runs On | Pass vExec? |
+|---|---|---|
+| `.thenApply()` | Same thread as previous stage | N/A |
+| `.thenApplyAsync()` | ForkJoinPool (default) | ❌ not needed for CPU work |
+| `.thenApplyAsync(fn, vExec)` | New virtual thread | ✅ for blocking I/O stages |
+
+---
+
+## Bottom Line
+
+> You **can and should** pass `vExec` to async variants **per stage** based on what that stage does.
+> This gives you **fine-grained control** — blocking stages get virtual threads, CPU stages stay on ForkJoinPool.
+> No need to blindly pass `vExec` everywhere — only where **blocking I/O** happens.
